@@ -1,0 +1,4 @@
+.env
+nginx/logs/*
+!nginx/logs/.gitkeep
+.vscode/
