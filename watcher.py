@@ -32,7 +32,63 @@ class LogWatcher:
         self.last_failover_alert = 0
         self.last_error_rate_alert = 0
         
-        logger.info(f"[WATCHER] Initialized - Threshold: {self.error_threshold}%, Window: {self.window_size}")
+        # Stats for monitoring
+        self.total_requests = 0
+        self.total_errors = 0
+        
+        logger.info("=" * 70)
+        logger.info("[WATCHER] Blue/Green Deployment Monitor - INITIALIZED")
+        logger.info("=" * 70)
+        logger.info(f"[CONFIG] Error Rate Threshold: {self.error_threshold}%")
+        logger.info(f"[CONFIG] Sliding Window Size: {self.window_size} requests")
+        logger.info(f"[CONFIG] Alert Cooldown: {self.cooldown_sec} seconds")
+        logger.info(f"[CONFIG] Maintenance Mode: {self.maintenance_mode}")
+        logger.info(f"[CONFIG] Slack Webhook: {'✓ Configured' if self.slack_webhook else '✗ Not configured'}")
+        logger.info(f"[CONFIG] Log File: {self.log_file}")
+        logger.info("=" * 70)
+
+        # Send startup notification to Slack
+        self.send_startup_notification()
+        
+
+    def send_startup_notification(self):
+        """
+        Sends a beautiful startup notification to Slack when the watcher starts.
+        """
+        if not self.slack_webhook:
+            logger.info("[STARTUP] Skipping Slack notification (webhook not configured)")
+            return
+        
+        startup_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        slack_payload = {
+            "attachments": [{
+                "color": "#36A2EB",  # Beautiful blue
+                "title": "🚀 Blue/Green Monitor - Online",
+                "text": "Log watcher has successfully started and is now monitoring your deployment.",
+                "fields": [
+                    {"title": "Status", "value": "✅ Active", "short": True},
+                    {"title": "Started At", "value": startup_time, "short": True},
+                    {"title": "Error Threshold", "value": f"{self.error_threshold}%", "short": True},
+                    {"title": "Window Size", "value": f"{self.window_size} requests", "short": True},
+                    {"title": "Alert Cooldown", "value": f"{self.cooldown_sec}s", "short": True},
+                    {"title": "Maintenance Mode", "value": "🔧 Enabled" if self.maintenance_mode else "✓ Disabled", "short": True}
+                ],
+                "footer": "Blue/Green Monitor",
+                "footer_icon": "https://platform.slack-edge.com/img/default_application_icon.png",
+                "ts": int(time.time())
+            }]
+        }
+        
+        try:
+            logger.info("[STARTUP] Sending startup notification to Slack...")
+            response = requests.post(self.slack_webhook, json=slack_payload, timeout=5)
+            if response.status_code == 200:
+                logger.info("[STARTUP] ✓ Startup notification sent successfully")
+            else:
+                logger.error(f"[STARTUP] ✗ Failed to send notification: {response.status_code}")
+        except Exception as e:
+            logger.error(f"[STARTUP] ✗ Error sending notification: {e}")
 
 
     def send_slack_alert(self, alert_type, message, details=None, from_pool=None, to_pool=None):
@@ -52,10 +108,12 @@ class LogWatcher:
         
         if alert_type == 'failover':
             if now - self.last_failover_alert < self.cooldown_sec:
+                logger.info(f"[COOLDOWN] Failover alert suppressed (last alert {int(now - self.last_failover_alert)}s ago)")
                 return
             self.last_failover_alert = now
         elif alert_type == 'error_rate':
             if now - self.last_error_rate_alert < self.cooldown_sec:
+                logger.info(f"[COOLDOWN] Error rate alert suppressed (last alert {int(now - self.last_error_rate_alert)}s ago)")
                 return
             self.last_error_rate_alert = now
         
@@ -102,15 +160,21 @@ class LogWatcher:
         
         if self.slack_webhook:
             try:
+                logger.info(f"[SLACK] Sending {alert_type} alert to Slack...")
                 response = requests.post(self.slack_webhook, json=slack_payload, timeout=5)
                 if response.status_code == 200:
-                    logger.info(f"[SLACK] Alert sent: {alert_type}")
+                    logger.info(f"[SLACK] ✓ Alert sent successfully: {alert_type}")
                 else:
-                    logger.error(f"[ERROR] Slack error: {response.status_code}")
+                    logger.error(f"[SLACK] ✗ Error response: {response.status_code} - {response.text}")
             except Exception as e:
-                logger.error(f"[ERROR] Failed to send alert: {e}")
+                logger.error(f"[SLACK] ✗ Failed to send alert: {e}")
         else:
-            logger.info(f"[ALERT] {alert_type}: {message}")
+            logger.warning("[SLACK] ✗ Webhook not configured - alert would be sent:")
+            logger.info(f"[ALERT] Type: {alert_type}")
+            logger.info(f"[ALERT] Message: {message}")
+            if details:
+                for key, value in details.items():
+                    logger.info(f"[ALERT] {key}: {value}")
 
 
     def check_failover(self, pool):
@@ -120,7 +184,7 @@ class LogWatcher:
         """
         if self.last_pool is None:
             self.last_pool = pool
-            logger.info(f"[INFO] Initial pool: {pool}")
+            logger.info(f"[POOL] Initial pool detected: {pool.upper()}")
             return
         
         if pool and pool != self.last_pool:
@@ -130,7 +194,10 @@ class LogWatcher:
                 "Current Pool": pool,
                 "Action Required": "Check primary container health"
             }
+            logger.warning("!" * 70)
             logger.warning(f"[FAILOVER] {message}")
+            logger.warning(f"[FAILOVER] Previous: {self.last_pool.upper()} | Current: {pool.upper()}")
+            logger.warning("!" * 70)
             self.send_slack_alert('failover', message, details, from_pool=self.last_pool, to_pool=pool)
             self.last_pool = pool
 
@@ -147,6 +214,12 @@ class LogWatcher:
         total_count = len(self.request_window)
         error_rate = (error_count / total_count) * 100
         
+        # Log stats periodically (every 100 requests)
+        if self.total_requests % 100 == 0:
+            logger.info(f"[STATS] Total Requests: {self.total_requests} | "
+                       f"Total Errors: {self.total_errors} | "
+                       f"Current Window Error Rate: {error_rate:.2f}%")
+        
         if error_rate > self.error_threshold:
             message = f"High error rate: {error_rate:.2f}% (threshold: {self.error_threshold}%)"
             details = {
@@ -156,20 +229,31 @@ class LogWatcher:
                 "Total Requests": total_count,
                 "Action Required": "Inspect logs, consider pool toggle"
             }
+            logger.warning("!" * 70)
             logger.warning(f"[ERROR_RATE] {message}")
+            logger.warning(f"[ERROR_RATE] Errors: {error_count}/{total_count} requests")
+            logger.warning("!" * 70)
             self.send_slack_alert('error_rate', message, details)
 
+
     def tail_log(self):
+        """
+        Tails the Nginx access log and processes new entries.
+        """
         logger.info(f"[WATCHER] Starting to tail {self.log_file}")
         
         while not os.path.exists(self.log_file):
-            logger.info(f"[WATCHER] Waiting for log file...")
+            logger.info(f"[WATCHER] Waiting for log file to be created...")
             time.sleep(2)
+        
+        logger.info(f"[WATCHER] Log file found. Beginning monitoring...")
         
         try:
             with open(self.log_file, 'r') as f:
+                # Move to end of file
                 f.seek(0, 2)
-                logger.info("[WATCHER] Ready. Monitoring logs...")
+                logger.info("[WATCHER] ✓ Ready. Monitoring for failovers and errors...")
+                logger.info("=" * 70)
                 
                 while True:
                     line = f.readline()
@@ -178,6 +262,10 @@ class LogWatcher:
                             log_entry = json.loads(line.strip())
                             pool = log_entry.get('pool', '')
                             upstream_status = log_entry.get('upstream_status', '')
+                            request = log_entry.get('request', '')
+                            status = log_entry.get('status', 0)
+                            
+                            self.total_requests += 1
                             
                             # Check if upstream had any errors (500s)
                             # upstream_status can be like "500, 500, 200" when retries happen
@@ -187,6 +275,11 @@ class LogWatcher:
                                 # Check if any upstream attempt was 5xx
                                 had_error = any(s.startswith('5') for s in statuses if s.strip())
                             
+                            if had_error:
+                                self.total_errors += 1
+                                logger.debug(f"[ERROR] {request} | Status: {status} | "
+                                           f"Upstream: {upstream_status} | Pool: {pool}")
+                            
                             self.request_window.append(had_error)
                             
                             if pool:
@@ -194,13 +287,21 @@ class LogWatcher:
                             
                             self.check_error_rate()
                         except json.JSONDecodeError:
+                            # Skip non-JSON lines
                             pass
                     else:
                         time.sleep(0.1)
         except KeyboardInterrupt:
-            logger.info("\n[WATCHER] Shutting down...")
+            logger.info("\n" + "=" * 70)
+            logger.info("[WATCHER] Shutting down gracefully...")
+            logger.info(f"[STATS] Final Statistics:")
+            logger.info(f"[STATS]   Total Requests Processed: {self.total_requests}")
+            logger.info(f"[STATS]   Total Errors Detected: {self.total_errors}")
+            if self.total_requests > 0:
+                logger.info(f"[STATS]   Overall Error Rate: {(self.total_errors/self.total_requests)*100:.2f}%")
+            logger.info("=" * 70)
         except Exception as e:
-            logger.error(f"[ERROR] {e}")
+            logger.error(f"[ERROR] Unexpected error: {e}")
             raise
 
 if __name__ == '__main__':

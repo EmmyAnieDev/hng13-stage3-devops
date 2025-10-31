@@ -1,5 +1,3 @@
-Here's a simple, focused runbook:
-
 ```markdown
 # Blue/Green Deployment Runbook
 
@@ -96,8 +94,11 @@ Here's a simple, focused runbook:
 # Check current pool
 curl http://localhost:8080/version
 
-# View recent logs
-cat nginx/logs/access.log | tail -10
+# View recent logs (now in nginx container)
+docker logs nginx_lb --tail 10
+
+# Follow logs in real-time
+docker logs -f nginx_lb
 
 # Check all containers
 docker-compose ps

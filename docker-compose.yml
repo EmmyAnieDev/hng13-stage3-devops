@@ -56,6 +56,12 @@ services:
       - app_blue
       - app_green
     restart: unless-stopped
+    command: >
+      sh -c "envsubst '$$ACTIVE_POOL $$PORT' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf &&
+            nginx -g 'daemon off;' & 
+            sleep 2 && 
+            tail -f /var/log/nginx/access.log & 
+            wait"
 
   alert_watcher:
     image: python:3.11-slim
